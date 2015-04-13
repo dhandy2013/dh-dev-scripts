@@ -81,7 +81,6 @@ class CommandLine:
 
 def main():
     args = docopt.docopt(__doc__)
-    env = {}
     list_cmd = CommandLine(['mysql', '--silent', '--raw',
                             '-e', 'show databases'])
     list_cmd.add_opts(args, common_mysql_passthru_opts)
@@ -103,7 +102,6 @@ def main():
     dump_cmd.add_opts(args, common_mysql_passthru_opts)
     dump_cmd.add_opts(args, mysqldump_passthru_opts)
     dump_cmd.add_args(final_db_names)
-    #print(dump_cmd)
     dump_cmd.check_call()
 
 
