@@ -60,22 +60,31 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
             self.show_text[self._cur_tag].append(content)
 
     def _pytest_fullname(self, test_file, test_class, test_name):
-        if self._args.strip_prefix and test_file.startswith(self._args.strip_prefix):
-            test_file = test_file[len(self._args.strip_prefix) :]
+        test_path = self._pytest_testpath(test_file, test_class)
         if test_class:
-            module_parts = os.path.splitext(test_file)[0].split("/")
-            if module_parts == test_class.split("."):
+            test_path_parts = os.path.splitext(test_file)[0].split("/")
+            if test_path_parts == test_class.split("."):
                 # It is a test function not a test method, get rid of class name
                 test_class = ""
             else:
                 # Get rid of package and module in front of test class name
                 test_class = test_class.rpartition(".")[-1]
-        if self._args.add_prefix and not test_file.startswith(self._args.add_prefix):
-            test_file = f"{self._args.add_prefix}{test_file}"
+        if self._args.strip_prefix and test_path.startswith(self._args.strip_prefix):
+            test_path = test_path[len(self._args.strip_prefix) :]  # noqa: E203
+        if self._args.add_prefix and not test_path.startswith(self._args.add_prefix):
+            test_path = f"{self._args.add_prefix}{test_path}"
         if test_class:
-            return f"{test_file}::{test_class}::{test_name}"
+            return f"{test_path}::{test_class}::{test_name}"
         else:
-            return f"{test_file}::{test_name}"
+            return f"{test_path}::{test_name}"
+
+    def _pytest_testpath(self, test_file, test_class):
+        test_basename = os.path.basename(test_file)
+        if test_basename.startswith("test_"):
+            # If it looks like a test file name then use the JUnit file attribute
+            return test_file
+        # Otherwise, turn the full test class name into a file name
+        return "/".join(test_class.split(".")) + ".py"
 
     def _start_testsuite(self, attrs):
         name = attrs.get("name")
