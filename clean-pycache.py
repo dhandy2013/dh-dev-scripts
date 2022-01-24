@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Remove __pycache__ directories and .pyc/.pyo files
+Remove __pycache__ directories and .pyc/.pyo files even if owned by root
 
 Q. Why not use pyclean? https://github.com/bittner/pyclean
 A. Try this and you will find out::
@@ -9,14 +9,15 @@ A. Try this and you will find out::
     sudo pyclean --dry-run .
 
 - On Ubuntu linux an old /usr/bin/pyclean script will get run instead
-- If you work around that problem, pyclean will fail with an ImportError
-  because when running as root your ~/.local/lib/python3.x/site-packages/
-  directory is not in PYTHONPATH so the pyclean package won't be found.
+- If you work around that problem by specifying the full path to the pyclean
+  script that you want, pyclean will fail with an ImportError because when
+  running as root your ~/.local/lib/python3.x/site-packages/ directory is not
+  in PYTHONPATH so the pyclean package won't be found.
 
 Q. Why do you need to run cleanup as user root?
-A. Because someone else's Docker setup script that I need to run unnecessarily
-   compiles a bunch of .py files into .pyc files as user root in a volume
-   containing my source code.
+A. I run a certain docker container that mounts my source code directory as an
+   external volume. That docker container (that I do not control) unfortunately
+   compiles .py files in my source tree into .pyc files owned by user root.
 """
 import argparse
 import os
@@ -62,11 +63,15 @@ def main():
         # Adding -B to Python options to avoid the irony of creating .pyc files
         # as user root when that is the very problem this script mitigates.
         cmd = ["sudo", sys.executable, "-B"] + argv
-        print(subprocess.list2cmdline(cmd))
+        print(subprocess.list2cmdline(cmd), file=sys.stderr)
         return subprocess.run(cmd, cwd=cwd).returncode
 
     for directory in args.directory:
         _recursive_clean(args, Path(directory))
+
+    if not args.for_real:
+        print("Ran in dry run mode, nothing was changed.", file=sys.stderr)
+        print("To actually remove files use: --for-real", file=sys.stderr)
 
 
 def _recursive_clean(args, directory: Path):
