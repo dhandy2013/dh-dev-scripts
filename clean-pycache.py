@@ -28,13 +28,12 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "directory",
         nargs="+",
-        help="Directories to search for __pycache__ and .pyc/.pyo",
+        help="Directories to search for .pyc/.pyo and __pycache__ files and dirs",
     )
     parser.add_argument(
         "--for-real",
@@ -42,14 +41,18 @@ def main():
         help="Actually delete files and directories instead of printing",
     )
     parser.add_argument(
-        "-q", "--quiet",
+        "-q",
+        "--quiet",
         action="store_true",
-        help="Do not print the __pycache__ and .pyc/.pyo directories and files",
+        help="Do not print .pyc/.pyo and __pycache__ files and dirs",
     )
     parser.add_argument(
-        "--sudo",
+        "--sudo", action="store_true", help="Restart this script as user root via sudo",
+    )
+    parser.add_argument(
+        "--only-root",
         action="store_true",
-        help="Restart this script as user root via sudo",
+        help="Only print/delete .pyc/.pyo and __pycache__ files and dirs owned by root",
     )
     args = parser.parse_args()
 
@@ -67,28 +70,50 @@ def main():
         return subprocess.run(cmd, cwd=cwd).returncode
 
     for directory in args.directory:
-        _recursive_clean(args, Path(directory))
+        clean_pycache(args, Path(directory))
 
     if not args.for_real:
-        print("Ran in dry run mode, nothing was changed.", file=sys.stderr)
-        print("To actually remove files use: --for-real", file=sys.stderr)
+        print(
+            "Dry run, nothing was changed. To remove files/dirs pass --for-real",
+            file=sys.stderr,
+        )
 
 
-def _recursive_clean(args, directory: Path):
-    for item in directory.iterdir():
-        if item.is_file():
-            if item.suffix in (".pyc", ".pyo"):
-                if not args.quiet:
-                    print(item)
-                if args.for_real:
-                    item.unlink()
-        elif item.is_dir():
-            _recursive_clean(args, item)
-            if item.name == "__pycache__":
-                if not args.quiet:
-                    print(item)
-                if args.for_real:
+def clean_pycache(args, directory: Path):
+    # topdown=False means subdirectories' contents are visited before their parent
+    # directories are. So by the time this function sees a __pycache__ directory, its
+    # contents should have been deleted (if args.for_real is true).
+    for dirpath, dirnames, filenames in os.walk(directory, topdown=False):
+        for item in filenames:
+            item = Path(dirpath, item)
+            if item.suffix not in (".pyc", ".pyo"):
+                continue
+            if args.only_root and item.owner() != "root":
+                continue
+            if not args.quiet:
+                print(item)
+            if args.for_real:
+                item.unlink()
+        for item in dirnames:
+            item = Path(dirpath, item)
+            if item.name != "__pycache__":
+                continue
+            if args.only_root and item.owner() != "root":
+                continue
+            if not args.quiet:
+                print(item)
+            if args.for_real:
+                # rmdir() could fail if:
+                # - A __pycache__ directory contains contents other than .pyc/.pyo files
+                #   (which should never happen)
+                # - We are only deleting items owned by root, and the __pycache__
+                #   directory is owned by root but contains at least one .pyc/.pyo file
+                #   *not* owned by root, and therefore not deleted earlier.
+                # Either way, print the exception to stderr and keep on going.
+                try:
                     item.rmdir()
+                except Exception as exc:
+                    print(exc, file=sys.stderr)
 
 
 if __name__ == "__main__":
