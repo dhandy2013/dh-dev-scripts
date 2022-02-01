@@ -2,24 +2,13 @@
 """
 Remove __pycache__ directories and .pyc/.pyo files even if owned by root
 
-Q. Why not use pyclean? https://github.com/bittner/pyclean
-A. Try this and you will find out::
-
-    pip install --user pyclean
-    sudo pyclean --dry-run .
-
-- On Ubuntu linux an old /usr/bin/pyclean script will get run instead
-- If you work around that problem by specifying the full path to the pyclean
-  script that you want, pyclean will fail with an ImportError because when
-  running as root your ~/.local/lib/python3.x/site-packages/ directory is not
-  in PYTHONPATH so the pyclean package won't be found.
-
-Q. Why do you need to run cleanup as user root?
-A. I run a certain docker container that mounts my source code directory as an
-   external volume. That docker container (that I do not control) unfortunately
-   compiles .py files in my source tree into .pyc files owned by user root.
+Q. Why do you need to remove .pyc files owned by user root?
+A. I need to run a certain docker container that mounts my source code directory
+   as an external volume. That docker container unfortunately compiles .py files
+   in my source tree into .pyc files owned by user root.
 """
 import argparse
+import fnmatch
 import os
 from pathlib import Path
 import subprocess
@@ -33,7 +22,8 @@ def main():
     parser.add_argument(
         "directory",
         nargs="+",
-        help="Directories to search for .pyc/.pyo and __pycache__ files and dirs",
+        help="Directories to recursively search for "
+        ".pyc/.pyo and __pycache__ files and dirs",
     )
     parser.add_argument(
         "--for-real",
@@ -53,6 +43,13 @@ def main():
         "--only-root",
         action="store_true",
         help="Only print/delete .pyc/.pyo and __pycache__ files and dirs owned by root",
+    )
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],  # Mutable default object, Ok in this limited case
+        help="Glob pattern of directory names to not process. "
+        "You can specify this multiple times.",
     )
     args = parser.parse_args()
 
@@ -80,10 +77,8 @@ def main():
 
 
 def clean_pycache(args, directory: Path):
-    # topdown=False means subdirectories' contents are visited before their parent
-    # directories are. So by the time this function sees a __pycache__ directory, its
-    # contents should have been deleted (if args.for_real is true).
-    for dirpath, dirnames, filenames in os.walk(directory, topdown=False):
+    pycache_dirs_to_delete = []
+    for dirpath, dirnames, filenames in os.walk(directory):
         for item in filenames:
             item = Path(dirpath, item)
             if item.suffix not in (".pyc", ".pyo"):
@@ -94,7 +89,10 @@ def clean_pycache(args, directory: Path):
                 print(item)
             if args.for_real:
                 item.unlink()
-        for item in dirnames:
+        for item in list(dirnames):
+            if any(fnmatch.fnmatch(item, pattern) for pattern in args.skip):
+                dirnames.remove(item)
+                continue
             item = Path(dirpath, item)
             if item.name != "__pycache__":
                 continue
@@ -103,17 +101,20 @@ def clean_pycache(args, directory: Path):
             if not args.quiet:
                 print(item)
             if args.for_real:
-                # rmdir() could fail if:
-                # - A __pycache__ directory contains contents other than .pyc/.pyo files
-                #   (which should never happen)
-                # - We are only deleting items owned by root, and the __pycache__
-                #   directory is owned by root but contains at least one .pyc/.pyo file
-                #   *not* owned by root, and therefore not deleted earlier.
-                # Either way, print the exception to stderr and keep on going.
-                try:
-                    item.rmdir()
-                except Exception as exc:
-                    print(exc, file=sys.stderr)
+                pycache_dirs_to_delete.append(item)
+    if args.for_real:
+        for item in pycache_dirs_to_delete:
+            # rmdir() could fail if:
+            # - A __pycache__ directory contains contents other than .pyc/.pyo files
+            #   (which should never happen)
+            # - We are only deleting items owned by root, and the __pycache__
+            #   directory is owned by root but contains at least one .pyc/.pyo file
+            #   *not* owned by root, and therefore not deleted earlier.
+            # Either way, print the exception to stderr and keep on going.
+            try:
+                item.rmdir()
+            except Exception as exc:
+                print(exc, file=sys.stderr)
 
 
 if __name__ == "__main__":
