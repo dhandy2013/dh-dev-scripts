@@ -48,7 +48,7 @@ def main():
         "--skip",
         action="append",
         default=[],  # Mutable default object, Ok in this limited case
-        help="Glob pattern of directory names to not process. "
+        help="Glob pattern of sub-directory names to not process. "
         "You can specify this multiple times.",
     )
     args = parser.parse_args()
