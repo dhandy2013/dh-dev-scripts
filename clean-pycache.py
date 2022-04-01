@@ -51,6 +51,11 @@ def main():
         help="Glob pattern of sub-directory names to not process. "
         "You can specify this multiple times.",
     )
+    parser.add_argument(
+        "--also-venv",
+        action="store_true",
+        help="Also recurse into virtual environments (marked by pyvenv.cfg)",
+    )
     args = parser.parse_args()
 
     # Only run sudo if we are not already effectively root
@@ -79,8 +84,8 @@ def main():
 def clean_pycache(args, directory: Path):
     pycache_dirs_to_delete = []
     for dirpath, dirnames, filenames in os.walk(directory):
-        for item in filenames:
-            item = Path(dirpath, item)
+        for filename in filenames:
+            item = Path(dirpath, filename)
             if item.suffix not in (".pyc", ".pyo"):
                 continue
             if args.only_root and item.owner() != "root":
@@ -89,11 +94,14 @@ def clean_pycache(args, directory: Path):
                 print(item)
             if args.for_real:
                 item.unlink()
-        for item in list(dirnames):
-            if any(fnmatch.fnmatch(item, pattern) for pattern in args.skip):
-                dirnames.remove(item)
+        for dirname in list(dirnames):
+            if any(fnmatch.fnmatch(dirname, pattern) for pattern in args.skip):
+                dirnames.remove(dirname)
                 continue
-            item = Path(dirpath, item)
+            item = Path(dirpath, dirname)
+            if not args.also_venv and Path(item, "pyvenv.cfg").exists():
+                dirnames.remove(dirname)
+                continue
             if item.name != "__pycache__":
                 continue
             if args.only_root and item.owner() != "root":
