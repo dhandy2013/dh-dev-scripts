@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Remove __pycache__ directories and .pyc/.pyo files even if owned by root
+Remove __pycache__ directories, .pyc/.pyo and cython artifacts
 
-Q. Why do you need to remove .pyc files owned by user root?
-A. I need to run a certain docker container that mounts my source code directory
-   as an external volume. That docker container unfortunately compiles .py files
-   in my source tree into .pyc files owned by user root.
+Remove these even if they are owned by user root.
+
+Q. Why do you have .pyc files and other Python artifacts owned by root?
+A. A certain docker container mounts the source directory as an external volume
+   but then builds and installs the code as user root, creating a bunch of
+   artifacts that are owned by root. The docker image should obviously be
+   fixed, but it isn't controlled by me so it will take time to make that
+   happen. In the mean time this script is a workaround to some problems.
 """
 import argparse
 import fnmatch
@@ -84,16 +88,34 @@ def main():
 def clean_pycache(args, directory: Path):
     pycache_dirs_to_delete = []
     for dirpath, dirnames, filenames in os.walk(directory):
+        # Clean up Python built artifacts
         for filename in filenames:
             item = Path(dirpath, filename)
-            if item.suffix not in (".pyc", ".pyo"):
+            if item.suffix not in (".pyc", ".pyo", ".so", ".c", ".html"):
                 continue
             if args.only_root and item.owner() != "root":
                 continue
+            # Check for Cython artifacts. Examples:
+            # common.c
+            # common.cpython-36m-x86_64-linux-gnu.so
+            # common.html
+            # common.py <- This is the Cython source file, could also be .pyx
+            if item.suffix == ".so":
+                if not item.suffixes[0].startswith(".cpython-"):
+                    # Not a compiled Python extension, skip it.
+                    continue
+            if item.suffix in (".c", ".html"):
+                py_item = item.parent / (item.stem + ".py")
+                pyx_item = item.parent / (item.stem + ".pyx")
+                if not py_item.exists() and not pyx_item.exists():
+                    # No Cython source file, skip it.
+                    continue
             if not args.quiet:
                 print(item)
             if args.for_real:
                 item.unlink()
+
+        # Clean up Python cache directories
         for dirname in list(dirnames):
             if any(fnmatch.fnmatch(dirname, pattern) for pattern in args.skip):
                 dirnames.remove(dirname)
@@ -110,6 +132,7 @@ def clean_pycache(args, directory: Path):
                 print(item)
             if args.for_real:
                 pycache_dirs_to_delete.append(item)
+
     if args.for_real:
         for item in pycache_dirs_to_delete:
             # rmdir() could fail if:
