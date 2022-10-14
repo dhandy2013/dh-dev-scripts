@@ -144,7 +144,7 @@ class CleanerScanner:
         Scan subdirectories of directory `dirpath`.
         Return a list that is a subset of dirnames that should be further scanned.
         """
-        dirnames_to_keep = []
+        subdirs_to_scan = []
         for dirname in list(dirnames):
             if any(fnmatch.fnmatch(dirname, pattern) for pattern in self.args.skip):
                 continue
@@ -152,7 +152,7 @@ class CleanerScanner:
             if not self.args.also_venv and Path(item, "pyvenv.cfg").exists():
                 # Skip virtual environment directory
                 continue
-            dirnames_to_keep.append(dirname)
+            subdirs_to_scan.append(dirname)
 
             if item.name != "__pycache__":
                 continue
@@ -160,7 +160,7 @@ class CleanerScanner:
                 continue
             self.pycache_dirs_to_delete.append(item)
 
-        return dirnames_to_keep
+        return subdirs_to_scan
 
 
 def clean_pycache(args, directory: Path):
