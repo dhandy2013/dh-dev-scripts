@@ -85,66 +85,103 @@ def main():
         )
 
 
-def clean_pycache(args, directory: Path):
-    pycache_dirs_to_delete = []
-    for dirpath_str, dirnames, filenames in os.walk(directory):
-        dirpath = Path(dirpath_str)
-        # Clean up Python built artifacts
-        items_to_delete = []
+class CleanerScanner:
+    def __init__(self, args):
+        self.args = args
+        self.pycache_dirs_to_delete = []
+        self.files_to_delete = []
+
+    def scan_files(self, dirpath, filenames):
+        py_or_pyx_sources = set()
         compiled_python_modules = []
         for filename in filenames:
             item = dirpath / filename
             if item.suffix in (".pyc", ".pyo"):
-                items_to_delete.append(item)
+                self.maybe_delete_file(item)
                 continue
+            if item.suffix in (".py", ".pyx"):
+                py_or_pyx_sources.add(item.name)
+                continue
+
             # Check for Cython artifacts. Examples:
+            #
             # common.c
             # common.cpython-36m-x86_64-linux-gnu.so
             # common.html
             # common.py <- This is the Cython source file, could also be .pyx
+            #
+            # But we have to be careful - there could be genuine Python extensions
+            # written in C, and we don't want to delete the .c source file.
             if item.suffix == ".so" and item.suffixes[0].startswith(".cpython-"):
                 # Compiled Python extension
-                compiled_python_modules.append(item.stem)
-                items_to_delete.append(item)
+                compiled_python_modules.append(item.name.partition(".")[0])
+                self.maybe_delete_file(item)
                 continue
 
         # Clean up Cython built artifacts in addition to the .so file
         for module_name in compiled_python_modules:
+            is_cython_module = False
+            for ext in (".py", ".pyx"):
+                if (module_name + ext) in py_or_pyx_sources:
+                    is_cython_module = True
+                    break
+            if not is_cython_module:
+                continue
+
+            # This is a Cython module - delete any generated .c or .html files
             for ext in (".c", ".html"):
                 item = dirpath / (module_name + ext)
                 if item.exists():
-                    items_to_delete.append(item)
+                    self.maybe_delete_file(item)
 
-        # Delete the files that should be deleted
-        for item in items_to_delete:
-            if args.only_root and item.owner() != "root":
-                continue
-            if not args.quiet:
-                print(item)
-            if args.for_real:
-                item.unlink()
+    def maybe_delete_file(self, item: Path):
+        if self.args.only_root and item.owner() != "root":
+            return
+        self.files_to_delete.append(item)
 
-        # Clean up Python cache directories
+    def scan_dirs(self, dirpath, dirnames):
+        """
+        Scan subdirectories of directory `dirpath`.
+        Return a list that is a subset of dirnames that should be further scanned.
+        """
+        dirnames_to_keep = []
         for dirname in list(dirnames):
-            if any(fnmatch.fnmatch(dirname, pattern) for pattern in args.skip):
-                dirnames.remove(dirname)
+            if any(fnmatch.fnmatch(dirname, pattern) for pattern in self.args.skip):
                 continue
             item = Path(dirpath, dirname)
-            if not args.also_venv and Path(item, "pyvenv.cfg").exists():
+            if not self.args.also_venv and Path(item, "pyvenv.cfg").exists():
                 # Skip virtual environment directory
-                dirnames.remove(dirname)
                 continue
+            dirnames_to_keep.append(dirname)
+
             if item.name != "__pycache__":
                 continue
-            if args.only_root and item.owner() != "root":
+            if self.args.only_root and item.owner() != "root":
                 continue
-            if not args.quiet:
-                print(item)
-            if args.for_real:
-                pycache_dirs_to_delete.append(item)
+            self.pycache_dirs_to_delete.append(item)
 
-    if args.for_real:
-        for item in pycache_dirs_to_delete:
+        return dirnames_to_keep
+
+
+def clean_pycache(args, directory: Path):
+    scanner = CleanerScanner(args)
+    for dirpath_str, dirnames, filenames in os.walk(directory):
+        dirpath = Path(dirpath_str)
+        scanner.scan_files(dirpath, filenames)
+        next_dirnames = scanner.scan_dirs(dirpath, dirnames)
+        dirnames[:] = next_dirnames
+
+    # Print and/or delete the files that should be deleted
+    for item in scanner.files_to_delete:
+        if not args.quiet:
+            print(item)
+        if args.for_real:
+            item.unlink()
+
+    for item in scanner.pycache_dirs_to_delete:
+        if not args.quiet:
+            print(item)
+        if args.for_real:
             # rmdir() could fail if:
             # - A __pycache__ directory contains contents other than .pyc/.pyo files
             #   (which should never happen)
