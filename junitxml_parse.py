@@ -12,16 +12,24 @@ import xml.sax.handler
 
 class JUnitXMLHandler(xml.sax.handler.ContentHandler):
     def __init__(self, args):
-        self._args = args
+        self._show = args.show
+        self._junitxml = args.junitxml
+        self._strip_prefix = args.strip_prefix
+        if args.add_prefix:
+            self._add_prefix = args.add_prefix
+        elif not os.path.isabs(args.junitxml):
+            # Form path prefix relative to junit.xml file
+            # Add path of junit.xml file as prefix to test files
+            self._add_prefix = os.path.dirname(os.path.normpath(args.junitxml)) + "/"
+        else:
+            self._add_prefix = ""
+        self._report_errors = args.errors
+        self._report_skips = args.skips
+        #####
         self._cur_tag = ""
         self._testcase_level = 0  # 0 if outside testcase tag, 1 otherwise
         self._cur_test = None
         self._cur_status = None
-        # Form path prefix relative to junit.xml file
-        junitxml = self._args.junitxml
-        if not os.path.isabs(junitxml) and not self._args.add_prefix:
-            # Add path of junit.xml file as prefix to test files
-            self._args.add_prefix = os.path.dirname(os.path.normpath(junitxml)) + "/"
         # Attributes used by report():
         self.nonpassing_tests = defaultdict(list)  # {status: test_list}
         self.unhandled_tags = set()
@@ -34,7 +42,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         self.num_errors = 0
         self.num_failures = 0
         self.num_skips = 0
-        # Used only if --show / self._args.show is set
+        # Used only if --show / self._show is set
         self.show_attrs = {}  # {attr_name: attr_val}
         self.show_text = defaultdict(list)  # {tag: text_chunk_list}
 
@@ -56,35 +64,57 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
     def characters(self, content):
         if self._testcase_level != 1 or self._cur_tag == "testcase" or not content:
             return
-        if self._args.show == self._cur_test:
+        if self._show == self._cur_test:
             self.show_text[self._cur_tag].append(content)
 
     def _pytest_fullname(self, test_file, test_class, test_name):
-        test_path = self._pytest_testpath(test_file, test_class)
-        if test_class:
-            test_path_parts = os.path.splitext(test_file)[0].split("/")
-            if test_path_parts == test_class.split("."):
-                # It is a test function not a test method, get rid of class name
-                test_class = ""
-            else:
-                # Get rid of package and module in front of test class name
-                test_class = test_class.rpartition(".")[-1]
-        if self._args.strip_prefix and test_path.startswith(self._args.strip_prefix):
-            test_path = test_path[len(self._args.strip_prefix) :]  # noqa: E203
-        if self._args.add_prefix and not test_path.startswith(self._args.add_prefix):
-            test_path = f"{self._args.add_prefix}{test_path}"
-        if test_class:
-            return f"{test_path}::{test_class}::{test_name}"
-        else:
-            return f"{test_path}::{test_name}"
+        """
+        Given the `file`, `class`, and `name` attributes of a test result XML element,
+        return the full pytest test reference in the form:
 
-    def _pytest_testpath(self, test_file, test_class):
-        test_basename = os.path.basename(test_file)
-        if test_basename.startswith("test_"):
-            # If it looks like a test file name then use the JUnit file attribute
-            return test_file
-        # Otherwise, turn the full test class name into a file name
-        return "/".join(test_class.split(".")) + ".py"
+            <path-to-.py-file>::<class-name>::<test-method-name>
+
+        If the test is a module-level function and not a class method, return:
+
+            <path-to-.py-file>::<test-function-name>
+
+        test_file:
+            Path to the .py file containing this test case, or None if the junit.xml
+            file did not contain that information. (Usually this is None.)
+        test_class:
+            For a test method, the fully-qualfied class name of the test clases,
+            e.g. 'tests.test_exceptions.TestTiming'
+        test_name:
+            For a test method, the name of the method on the test class for this test
+            instance, e.g. 'test_timing'
+        """
+        if test_class is not None:
+            test_module_parts = test_class.split(".")[:-1]
+            # Get rid of package and module in front of test class name
+            test_class_name = test_class.rpartition(".")[-1]
+        else:
+            test_module_parts = []
+            test_class_name = ""
+
+        if test_file is not None:
+            test_file_parts = os.path.splitext(test_file)[0].split("/")
+            if test_file_parts == test_module_parts + [test_class_name]:
+                # It is a test function not a test method, get rid of class name
+                test_class_name = ""
+            else:
+                test_module_parts = test_file_parts
+
+        path_to_py_file = "/".join(test_module_parts) + ".py"
+        if self._strip_prefix and path_to_py_file.startswith(self._strip_prefix):
+            path_to_py_file = path_to_py_file[len(self._strip_prefix) :]  # noqa: E203
+        path_to_py_file = f"{self._add_prefix}{path_to_py_file}"
+        if test_class_name:
+            return f"{path_to_py_file}::{test_class_name}::{test_name}"
+        else:
+            return f"{path_to_py_file}::{test_name}"
+
+    def _start_testsuites(self, attrs):
+        pass
 
     def _start_testsuite(self, attrs):
         name = attrs.get("name")
@@ -95,9 +125,13 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
             )
         self.expected_num_errors = int(attrs["errors"])
         self.expected_num_failures = int(attrs["failures"])
-        self.expected_num_skips = int(attrs["skips"])  # skips plus xfails
         self.expected_num_tests = int(attrs["tests"])
         self.total_time_sec = float(attrs["time"])
+        # DH 2024-02-12 junit format changed? skips -> skipped
+        expected_num_skips_str = attrs.get("skips")
+        if expected_num_skips_str is None:
+            expected_num_skips_str = attrs["skipped"]
+        self.expected_num_skips = int(expected_num_skips_str)  # skips plus xfails
 
     def _start_testcase(self, attrs):
         self._testcase_level += 1
@@ -106,13 +140,13 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         test_name = attrs.get("name")
         if test_name:
             test_class = attrs["classname"]
-            test_file = attrs["file"]
+            test_file = attrs.get("file")
             self._cur_test = self._pytest_fullname(test_file, test_class, test_name)
         else:
             # Mangled <testcase> element, happens when pressing Ctrl-C during test run
             self._cur_test = None
         self._cur_status = None
-        if self._args.show == self._cur_test:
+        if self._show == self._cur_test:
             for attr_name in sorted(attrs.keys()):
                 self.show_attrs[attr_name] = attrs[attr_name]
 
@@ -145,15 +179,15 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         assert self._testcase_level == 1
 
     def report(self):
-        if self._args.show:
-            print(f"Details for test: {self._args.show}")
+        if self._show:
+            print(f"Details for test: {self._show}")
             for attr_name, attr_val in self.show_attrs.items():
                 print(f"  {attr_name}: {attr_val}")
             for tag_name, text_chunks in self.show_text.items():
                 print(f"{tag_name}:")
                 print("".join(text_chunks))
         else:
-            print(f"Report on JUnit XML file {self._args.junitxml}:")
+            print(f"Report on JUnit XML file {self._junitxml}:")
             print("Stats from the <testsuites> tag:")
             print(f"{self.expected_num_errors} errors")
             print(f"{self.expected_num_failures} failures")
@@ -170,7 +204,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         if self.unhandled_tags:
             print()
             print("Unhandled tags:", sorted(self.unhandled_tags))
-        if self._args.errors:
+        if self._report_errors:
             print()
             failed_tests = self.nonpassing_tests["ERROR"].copy()
             failed_tests.extend(self.nonpassing_tests["FAIL"])
@@ -178,7 +212,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
             print(f"{len(failed_tests)} tests with status ERROR or FAIL:")
             for test_fullname in failed_tests:
                 print(test_fullname)
-        if self._args.skips:
+        if self._report_skips:
             print()
             self.report_status("SKIP")
 
@@ -207,7 +241,7 @@ def main():
         "--add-prefix",
         default="",
         help=(
-            "Filename prefix to add if it is not already there"
+            "Prefix to add to path to .py file for printing test names"
             " (after processing --strip-prefix)"
         ),
     )
