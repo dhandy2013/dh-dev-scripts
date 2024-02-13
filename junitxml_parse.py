@@ -10,8 +10,14 @@ import xml.sax
 import xml.sax.handler
 
 
+# pylint: disable=too-many-instance-attributes
 class JUnitXMLHandler(xml.sax.handler.ContentHandler):
+    """
+    Handles "events" (XML tag start, end) for parsed junit.xml files
+    """
+
     def __init__(self, args):
+        super().__init__()
         self._show = args.show
         self._junitxml = args.junitxml
         self._strip_prefix = args.strip_prefix
@@ -20,9 +26,13 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         elif not os.path.isabs(args.junitxml):
             # Form path prefix relative to junit.xml file
             # Add path of junit.xml file as prefix to test files
-            self._add_prefix = os.path.dirname(os.path.normpath(args.junitxml)) + "/"
+            junitxml_dir = os.path.dirname(os.path.normpath(args.junitxml))
+            if junitxml_dir:
+                junitxml_dir += "/"
+            self._add_prefix = junitxml_dir
         else:
             self._add_prefix = ""
+        self._report_passing = args.passing
         self._report_errors = args.errors
         self._report_skips = args.skips
         #####
@@ -31,6 +41,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         self._cur_test = None
         self._cur_status = None
         # Attributes used by report():
+        self.passing_tests = []
         self.nonpassing_tests = defaultdict(list)  # {status: test_list}
         self.unhandled_tags = set()
         self.expected_num_errors = None
@@ -67,9 +78,9 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         if self._show == self._cur_test:
             self.show_text[self._cur_tag].append(content)
 
-    def _pytest_fullname(self, test_file, test_class, test_name):
+    def _pytest_fullname(self, test_class, test_name):
         """
-        Given the `file`, `class`, and `name` attributes of a test result XML element,
+        Given the `classname` and `name` attributes of a testcase XML element,
         return the full pytest test reference in the form:
 
             <path-to-.py-file>::<class-name>::<test-method-name>
@@ -78,15 +89,15 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
 
             <path-to-.py-file>::<test-function-name>
 
-        test_file:
-            Path to the .py file containing this test case, or None if the junit.xml
-            file did not contain that information. (Usually this is None.)
         test_class:
-            For a test method, the fully-qualfied class name of the test clases,
+            For a test method, the fully-qualfied class name of the test class,
             e.g. 'tests.test_exceptions.TestTiming'
+            For a test function, the full-qualified name of the test module, e.g.
+            'tests.test_module'
         test_name:
-            For a test method, the name of the method on the test class for this test
-            instance, e.g. 'test_timing'
+            The name of the test method or function.  The method or function name may be
+            followed by other parameters in square brackets.  Example:
+            'test_add_integers[test_option_b]'
         """
         if test_class is not None:
             test_module_parts = test_class.split(".")[:-1]
@@ -96,13 +107,15 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
             test_module_parts = []
             test_class_name = ""
 
-        if test_file is not None:
-            test_file_parts = os.path.splitext(test_file)[0].split("/")
-            if test_file_parts == test_module_parts + [test_class_name]:
-                # It is a test function not a test method, get rid of class name
-                test_class_name = ""
-            else:
-                test_module_parts = test_file_parts
+        # This is not a 100% accurate way to distinguish a test function from a test
+        # method, because pytest can be configured to look for test class names not
+        # beginning with "Test". But such non-standard test class names should be
+        # discouraged anyway.
+        if test_class_name and not test_class_name.startswith("Test"):
+            # test_class_name doesn't look like a test class name.
+            # Treat it as a test module name.
+            test_module_parts.append(test_class_name)
+            test_class_name = ""
 
         path_to_py_file = "/".join(test_module_parts) + ".py"
         if self._strip_prefix and path_to_py_file.startswith(self._strip_prefix):
@@ -110,8 +123,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         path_to_py_file = f"{self._add_prefix}{path_to_py_file}"
         if test_class_name:
             return f"{path_to_py_file}::{test_class_name}::{test_name}"
-        else:
-            return f"{path_to_py_file}::{test_name}"
+        return f"{path_to_py_file}::{test_name}"
 
     def _start_testsuites(self, attrs):
         pass
@@ -140,8 +152,7 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         test_name = attrs.get("name")
         if test_name:
             test_class = attrs["classname"]
-            test_file = attrs.get("file")
-            self._cur_test = self._pytest_fullname(test_file, test_class, test_name)
+            self._cur_test = self._pytest_fullname(test_class, test_name)
         else:
             # Mangled <testcase> element, happens when pressing Ctrl-C during test run
             self._cur_test = None
@@ -154,31 +165,36 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         self._testcase_level -= 1
         if self._cur_status:
             self.nonpassing_tests[self._cur_status].append(self._cur_test)
+        else:
+            self.passing_tests.append(self._cur_test)
         self._cur_test = None
         self._cur_status = None
 
-    def _start_error(self, attrs):
+    def _start_error(self, _attrs):
         assert self._testcase_level == 1
         self.num_errors += 1
         self._cur_status = "ERROR"
 
-    def _start_failure(self, attrs):
+    def _start_failure(self, _attrs):
         assert self._testcase_level == 1
         self.num_failures += 1
         self._cur_status = "FAIL"
 
-    def _start_skipped(self, attrs):
+    def _start_skipped(self, _attrs):
         assert self._testcase_level == 1
         self.num_skips += 1
         self._cur_status = "SKIP"
 
-    def _start_system_out(self, attrs):
+    def _start_system_out(self, _attrs):
         assert self._testcase_level == 1
 
-    def _start_system_err(self, attrs):
+    def _start_system_err(self, _attrs):
         assert self._testcase_level == 1
 
     def report(self):
+        """
+        Print report on junit.xml file contents
+        """
         if self._show:
             print(f"Details for test: {self._show}")
             for attr_name, attr_val in self.show_attrs.items():
@@ -204,6 +220,17 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         if self.unhandled_tags:
             print()
             print("Unhandled tags:", sorted(self.unhandled_tags))
+        if self._report_passing:
+            print()
+            print(f"{len(self.passing_tests)} passing tests:")
+            for test_fullname in sorted(self.passing_tests):
+                print(test_fullname)
+        if self._report_skips:
+            print()
+            test_list = self.nonpassing_tests["SKIP"]
+            print(f"{len(test_list)} tests with status SKIP:")
+            for test_fullname in sorted(test_list):
+                print(test_fullname)
         if self._report_errors:
             print()
             failed_tests = self.nonpassing_tests["ERROR"].copy()
@@ -212,17 +239,9 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
             print(f"{len(failed_tests)} tests with status ERROR or FAIL:")
             for test_fullname in failed_tests:
                 print(test_fullname)
-        if self._report_skips:
-            print()
-            self.report_status("SKIP")
-
-    def report_status(self, status):
-        test_list = self.nonpassing_tests[status]
-        print(f"{len(test_list)} tests with status {status}:")
-        for test_fullname in test_list:
-            print(test_fullname)
 
 
+# pylint: disable=missing-function-docstring
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("junitxml", help="Name of JUnit XML file")
@@ -233,16 +252,21 @@ def main():
         "--skips", action="store_true", help="Report skipped and xfailed tests"
     )
     parser.add_argument(
+        "--passing", action="store_true", help="Report passing tests",
+    )
+    parser.add_argument(
         "--strip-prefix",
         default="/code/",
-        help="Filename prefix to remove if it is there",
+        help="Filename prefix to remove if it is there. Default: /code/",
     )
     parser.add_argument(
         "--add-prefix",
         default="",
         help=(
             "Prefix to add to path to .py file for printing test names"
-            " (after processing --strip-prefix)"
+            " (after processing --strip-prefix.)"
+            " Default: use path to directory containing JUnit XML file"
+            " if it is not an absolute path, otherwise use empty string."
         ),
     )
     parser.add_argument(
