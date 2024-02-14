@@ -205,14 +205,14 @@ class JUnitXMLHandler(xml.sax.handler.ContentHandler):
         else:
             print(f"Report on JUnit XML file {self._junitxml}:")
             print("Stats from the <testsuites> tag:")
-            print(f"{self.expected_num_errors} errors")
-            print(f"{self.expected_num_failures} failures")
+            expected_num_errors = self.expected_num_errors + self.expected_num_failures
+            print(f"{expected_num_errors} errors (errors + failures)")
             print(f"{self.expected_num_skips} skips (skips + xfails)")
             print(f"{self.expected_num_tests} tests total.")
             print()
             print("Stats from the body of the report:")
-            print(f"Number of errors: {self.num_errors}")
-            print(f"Number of failures: {self.num_failures}")
+            num_errors = self.num_errors + self.num_failures
+            print(f"Number of errors: {num_errors} (errors + failures)")
             print(f"Number of skips (skips + xfails): {self.num_skips}")
             print(f"Number of <testcase> tags: {self.num_testcases}")
             print()
