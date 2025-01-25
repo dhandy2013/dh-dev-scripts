@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 Dump MySQL databases, specifying database names with using glob patterns.
 
@@ -18,10 +18,9 @@ Example:
     mysql_dump_dbs.py --user=$MYSQL_USER --password="$MYSQL_PASSWORD" "abc*"
 
 Note:
-    The MySQL username and password come from environment variables
-    MYSQL_USER and MYSQL_PASSWORD, respectively.
+    The databases are dumped in text format to standard output.
+    To save the output, redirect to a file using "> filename.dump"
 """
-from __future__ import print_function
 
 from collections import OrderedDict
 import fnmatch
@@ -88,7 +87,8 @@ def main():
     db_names = output.split()
     db_dict = OrderedDict()  # ordered set: {db_name: True}
     for db_name_pattern in args['<db-name-pattern>']:
-        for db_name in db_names:
+        for db_name_bytes in db_names:
+            db_name = db_name_bytes.decode('utf-8')
             if fnmatch.fnmatchcase(db_name, db_name_pattern):
                 db_dict[db_name] = True
     final_db_names = list(db_dict)
